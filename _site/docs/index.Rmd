@@ -1,0 +1,192 @@
+---
+title: "Risk Factors of Child Mortality with COVID-19 Manuscript"
+date: '2022-08-02'
+output: html_document
+---
+
+# Data Preparation
+
+## Libraries
+
+In this section, we would like to show of all packages that we use:
+
+```{r}
+library(survival)
+library(survminer)
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+library(ggfortify)
+library(ranger)
+library(readxl)
+library(tidyr)
+```
+
+## Importing Dataset
+
+This dataset was from Jakarta Health Office from March to September 2020
+
+```{r}
+setwd("C:/Users/dhihr/Downloads")
+NEWWW_Anlsiis_artikel2 <- read_excel("NEWWW_Anlsiis_artikel2(2).xls")
+survival <- NEWWW_Anlsiis_artikel2
+survival <- data.frame(no = survival$No, gender = survival$JenisKelamin, location = survival$Wilayah, date_PCR_result = survival$TanggalHasilLabKeluarTangga, date_end_treat = survival$TglPulangIsolasiPerawatanMe, status = survival$STATUSRawatSembuhMeninggal, age_group = survival$KelompokUmur, ICU = survival$ICUya1tidak0, heart_diseases = survival$Jantung, hypertension = survival$Hipertensi, obesity = survival$Obesitas, malignancy = survival$Keganasan, kidney_failure = survival$GagalGinjalKronis, immunocompromise = survival$GangguanImmunologi, pneumonia = survival$Pneumonia)
+survival$location <- recode(survival$location, "JAKARTA SELATAN" = "South Jakarta", "JAKARTA TIMUR" = "East Jakarta", "JAKARTA PUSAT" = "Central Jakarta", "JAKARTA BARAT" = "West Jakarta", "JAKARTA UTARA" = "North Jakarta", "KEP. SERIBU" = "Thousand Islands")
+head(survival)
+```
+## Rename Data
+
+All of data were in Indonesia, so I would like to change into English
+
+```{r}
+survival$ICU <- ifelse(survival$ICU == 1, "Yes", "No")
+survival$gender <- ifelse(survival$gender == "P", "Female", "Male")
+survival$heart_diseases <- ifelse(survival$heart_diseases == "1", "Yes", "No")
+survival$hypertension <- ifelse(survival$hypertension == "1", "Yes", "No")
+survival$obesity <- ifelse(survival$obesity == "1", "Yes", "No")
+survival$malignancy <- ifelse(survival$malignancy == "1", "Yes", "No")
+survival$kidney_failure <- ifelse(survival$kidney_failure == "1", "Yes", "No")
+survival$immunocompromise <- ifelse(survival$immunocompromise == "1", "Yes", "No")
+survival$pneumonia <- ifelse(survival$pneumonia == "1", "Yes", "No")
+survival$status <- ifelse(survival$status == "Sembuh", "Recovered", "Death")
+survival$no <- as.character(survival$no)
+head(survival)
+```
+
+
+# Survival Analysis 
+
+## Finding survival time
+
+The survival time is date_end_treat negative date_PCR_result. We also made the dummy variable of status, where 1 for event (death) and 0 for censored (recovered). We also cleaned the -1 days to 1 day, due to misinformation in dataset.
+
+```{r}
+survival$date_end_treat <- as.Date(survival$date_end_treat)
+survival$date_PCR_result <- as.Date(survival$date_PCR_result)
+survival$time <- difftime(survival$date_end_treat, survival$date_PCR_result, units = "days")
+table(survival$time)
+survival$time[survival$time < 0] <- 1
+table(survival$time)
+survival$status_n <- ifelse(survival$status == "Death", 1, 0)
+```
+## Dummy Variables
+
+Before we did the bivariate, we would like to make the dummy variables.
+
+```{r}
+survival$ICU_n <- ifelse(survival$ICU == "Yes", 1, 0)
+survival$gender_n <- ifelse(survival$gender == "Male", 0, 1)
+survival$heart_diseases_n <- ifelse(survival$heart_diseases == "Yes", 1, 0)
+survival$hypertension_n <- ifelse(survival$hypertension == "Yes", 1, 0)
+survival$obesity_n <- ifelse(survival$obesity == "Yes", 1, 0)
+survival$malignancy_n <- ifelse(survival$malignancy == "Yes", 1, 0)
+survival$kidney_failure_n <- ifelse(survival$kidney_failure == "Yes", 1, 0)
+survival$immunocompromise_n <- ifelse(survival$immunocompromise == "Yes", 1, 0)
+survival$pneumonia_n <- ifelse(survival$pneumonia == "Yes", 1, 0)
+survival$age_group_n <- ifelse(survival$age_group == "<=5",1,0)
+```
+
+## Bivariate Analysis
+
+```{r}
+covariates <- c("gender_n", "ICU_n",  "heart_diseases_n", "hypertension_n", "obesity_n", "kidney_failure_n", "malignancy_n", "immunocompromise_n", "age_group_n", "pneumonia_n")
+univ_formulas <- sapply(covariates,
+                        function(x) as.formula(paste('Surv(time, status_n)~', x)))
+
+univ_models <- lapply( univ_formulas, function(x){coxph(x, data = survival)})
+univ_results <- lapply(univ_models,
+                       function(x){ 
+                         x <- summary(x)
+                         p.value<-signif(x$wald["pvalue"], digits=2)
+                         wald.test<-signif(x$wald["test"], digits=2)
+                         beta<-signif(x$coef[1], digits=2);#coeficient beta
+                         HR <-signif(x$coef[2], digits=2);#exp(beta)
+                         HR.confint.lower <- signif(x$conf.int[,"lower .95"], 2)
+                         HR.confint.upper <- signif(x$conf.int[,"upper .95"],2)
+                         HR <- paste0(HR, " (", 
+                                      HR.confint.lower, "-", HR.confint.upper, ")")
+                         res<-c(beta, HR, wald.test, p.value)
+                         names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
+                                       "p.value")
+                         return(res)
+                         #return(exp(cbind(coef(x),confint(x))))
+                       })
+res <- t(as.data.frame(univ_results, check.names = FALSE))
+res2 <- as.data.frame(res)
+res2
+
+```
+
+## Kaplan-Meier Analysis
+
+We would analysis the factors that were a statistically significant. There will be a difference about 0.005 from the bivariate analysis above.
+
+```{r}
+sfit_heart <- survfit(Surv(time, status_n)~heart_diseases, data=survival)
+summary(sfit_heart)
+ggsurvplot(sfit_heart, pval=TRUE, conf.int = TRUE, surv.median.line = "hv",  ggtheme = theme_bw())
+sfit_kidney_failure <- survfit(Surv(time, status_n)~kidney_failure, data=survival)
+summary(sfit_kidney_failure)
+ggsurvplot(sfit_kidney_failure, pval=TRUE, conf.int = TRUE, surv.median.line = "hv",  ggtheme = theme_bw())
+sfit_age_group <- survfit(Surv(time, status_n)~age_group, data=survival)
+summary(sfit_age_group)
+ggsurvplot(sfit_age_group, pval=TRUE, conf.int = TRUE, surv.median.line = "hv")
+sfit_immunocompromise <- survfit(Surv(time, status_n)~immunocompromise, data=survival)
+summary(sfit_immunocompromise)
+ggsurvplot(sfit_immunocompromise, pval=TRUE, conf.int = TRUE, surv.median.line = "hv")
+sfit_hypertension <- survfit(Surv(time, status_n)~hypertension, data=survival)
+sfit_pneumonia <- survfit(Surv(time, status_n)~pneumonia, data=survival)
+summary(sfit_pneumonia)
+ggsurvplot(sfit_pneumonia, pval=TRUE, conf.int = TRUE, surv.median.line = "hv")
+```
+
+## Multivariate Analysis
+
+We made a multivariate model from pneumonia, immunocompromise, and age groups.
+
+```{r}
+res.cox <- coxph(Surv(time, status_n) ~pneumonia_n + immunocompromise_n + age_group_n, data =  survival)
+summary(res.cox, conf.int = FALSE)
+ggforest(res.cox, data=survival)
+```
+
+## Model fitting
+
+We fitted the model with Schoenfeld Global test.
+
+```{r}
+test.ph <- cox.zph(res.cox)
+test.ph
+ggcoxzph(test.ph)
+ggcoxdiagnostics(res.cox, type = "deviance",
+                 linear.predictions = FALSE, ggtheme = theme_minimal())
+```
+
+# Epicurve
+
+This is the additional graph for epidemic curve per cities and municipality, and also the epidemic curve from outcome categories.
+
+```{r}
+agregate <- survival %>% group_by(date_PCR_result) %>% count()
+survival <- survival %>% mutate(Recovered = (status == 'Recovered'), Death = (status == 'Death'))
+agregate_outcome <- survival %>% group_by(date_end_treat) %>% summarise(total = n(), Recovered = sum(Recovered), Death = sum(Death))
+agregate_outcome <- dplyr::rename(agregate_outcome, Date = date_end_treat)
+agregate <- dplyr::rename(agregate, Date = date_PCR_result)
+agregate <- rename(agregate, Confirmed = n)
+agregate <- left_join(agregate, agregate_outcome, by = 'Date')
+agregate[is.na(agregate)] <- 0
+agregate_2 <- agregate %>% pivot_longer(cols = c('Confirmed', 'Recovered', 'Death'), names_to = 'Category',
+                                                        values_to = 'n')
+
+school_close <- as.Date('2020-03-16')
+psbb2 <- as.Date('2020-04-01')
+end <- as.Date(last(agregate_2$Date))
+p <- ggplot(agregate_2, aes(x = Date, y = n, fill = Category)) + geom_bar(stat = "identity", color = 'black') + 
+  scale_fill_manual(values = c("lightcyan", "red", "lightblue")) + theme_minimal()
+p<- p +  geom_vline(xintercept= school_close, linetype="dashed", color = "blue", size = 1.5) +
+  annotate(geom="text", x= psbb2, y=150, label = "School Closure: 16 Mar 2020", color = "blue")
+p2 <- ggplot(survival, aes(x = date_PCR_result)) +geom_bar(color = "black", fill = "firebrick") + facet_wrap(~location, ncol = 2) + 
+  theme_minimal() + theme(strip.text = element_text( size = 9, face = "bold" ))
+p
+p2
+```
