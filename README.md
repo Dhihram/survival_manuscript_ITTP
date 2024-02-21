@@ -1,4 +1,6 @@
-# Risk Factors of Child Mortality with COVID-19 Manuscript
+# Risk Factors of Child Mortality with COVID-19 Manuscript <br>
+![GitHub Releases](https://img.shields.io/badge/available-data-red) <br>
+
 This is the repository for the manuscript, titled ''Risk Factors of Child Mortality with COVID-19'. 
 This repo contains:
 <br> </br> 
